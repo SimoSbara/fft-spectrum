@@ -3,7 +3,16 @@
 # Compiler and flags
 #-lasound
 CC = gcc
-LDFLAGS = -lm  -framework AudioToolbox -framework CoreFoundation
+
+
+PLATFORM := $(shell uname)
+
+ifeq  ($(PLATFORM),Linux)
+	LDFLAGS = -lm -lasound
+else ifeq ($(PLATFORM),Darwin)
+	LDFLAGS = -lm -framework AudioToolbox -framework CoreFoundation
+endif
+
 CFLAGS = -Wall -Wextra -O2
 
 # Directories

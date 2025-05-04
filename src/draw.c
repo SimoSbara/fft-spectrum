@@ -99,25 +99,43 @@ void kitty_draw_sound(int frame, double complex* buffer, int samples, double min
 {
     double range = max - min;
 
-    if(range == 0 || !buffer || samples <= 0)
+    if(range == 0 || buffer == NULL || samples <= 1)
         return;
 
-    double mag;
-    int x, y;
-
-    struct rgb* ptr = fb;
-    struct rgb* pixel;
+    double mag1, mag2;
+    int x1, x2, y1, y2;
 
     memset(fb, 0, w * h * 3);
 
-    for(int i = 0; i < samples; i++)
+    for(int i = 0; i < samples - 1; i++)
     {
-        mag = (cabs(buffer[i]) - min) / range;
+        mag1 = (cabs(buffer[i]) - min) / range;
+        mag2 = (cabs(buffer[i + 1]) - min) / range;
         
-        x = i;
-        y = (double)(h - 1) - mag * (double)(h - 1);
+        x1 = i;
+        x2 = i + 1;
+        y1 = (double)(h - 1) - mag1 * (double)(h - 1);
+        y2 = (double)(h - 1) - mag2 * (double)(h - 1);
 
-        //printf("x y mag %d %d %f\n", x, y);
+        draw_line(x1, x2, y1, y2);
+    }
+
+    kitty_update_display(0, w, h);
+}
+
+void draw_line(int x1, int x2, int y1, int y2)
+{
+    struct rgb* ptr = fb, *pixel;
+    int x, y;
+
+    // line between two points
+    int dx = x2 - x1;
+    int dy = y2 - y1;
+    double m = dy/dx;
+
+    for(x = x1; x <= x2; x++)
+    {
+        y = m * (x - x1) + y1;
 
         pixel = ptr + y * w + x;
 
@@ -125,6 +143,4 @@ void kitty_draw_sound(int frame, double complex* buffer, int samples, double min
         pixel->g = 255;
         pixel->b = 0;
     }
-
-    kitty_update_display(0, w, h);
 }

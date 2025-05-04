@@ -56,7 +56,7 @@ void get_range_sound(double complex* buffer, int n, double* min, double* max)
 
 snd_pcm_t *pcm_handle;
 snd_pcm_hw_params_t *params;
-snd_pcm_uframes_t SAMPLES;
+snd_pcm_uframes_t SAMPLES = WIDTH;
 unsigned int sample_rate = 44100;
 int dir;
 
@@ -80,9 +80,9 @@ bool init_microphone()
     snd_pcm_hw_params_set_channels(pcm_handle, params, 1);
     snd_pcm_hw_params_set_rate_near(pcm_handle, params, &sample_rate, &dir);
 
-    // Imposta i parametri hardware
+    // Parameters
     rc = snd_pcm_hw_params(pcm_handle, params);
-    if (rc < 0) 
+    if (rc < 0)
     {
         fprintf(stderr, "Error setting parameters: %s\n", snd_strerror(rc));
         return false;
@@ -108,19 +108,25 @@ void stop_microphone()
 void get_microphone_buffer(double complex* buffer, int samples)
 {
     int rc = snd_pcm_readi(mic_buffer, buffer, samples);
-    if (rc == -EPIPE) {
-        fprintf(stderr, "overflow!\n");
-        snd_pcm_prepare(pcm_handle);
-    } else if (rc < 0) {
-        fprintf(stderr, "error microphone: %s\n", snd_strerror(rc));
-    } else if (rc != (int)samples) {
-        fprintf(stderr, "partial frames: %d frame\n", rc);
+
+    if (rc < 0)
+    {
+        switch(rc)
+        {
+            case -EPIPE:
+                fprintf(stderr, "Overflow!\n");
+                snd_pcm_prepare(pcm_handle);
+            break;
+            default:
+                fprintf(stderr, "Error microphone: %s\n", snd_strerror(rc)); 
+            break;
+        }
     }
+    else if (rc != (int)samples) 
+        fprintf(stderr, "Partial frames: %d frame\n", rc);
 
     for(int i = 0; i < SAMPLES; i++)
-    {
        buffer[i] = mic_buffer[i] / (double)(0xffff);
-    }
 }
 
 #elif defined(__APPLE__) && defined(__MACH__)
@@ -186,7 +192,7 @@ bool init_microphone()
         return false;
     }
 
-    // Allocazione dei buffer
+    // Allocate buffer
     for (int i = 0; i < kBufferCount; ++i) {
         AudioQueueBufferRef buffer;
         AudioQueueAllocateBuffer(queue, kBufferSize, &buffer);
@@ -231,34 +237,30 @@ int main(int argc, char* argv[])
 {
     printf("kitty_init\n");
     kitty_init(WIDTH, HEIGHT);
+
     printf("init_microphone\n");
-    init_microphone();
+    if(!init_microphone())
+        return 1;
+
     printf("init_sound\n");
     init_sound(SAMPLES);
 
     int f = 0, inverse = 0;
     double max, min;
 
-    while(true)
+    while(f < 20)
     {
-        // printf("mic\n");
         get_microphone_buffer(sound, SAMPLES);
-
-        // printf("fft\n");
-        fft(sound, SAMPLES, false);
-
-        //printf("range\n");
         get_range_sound(sound, SAMPLES, &min, &max);
-        //printf("%f %f\n", min, max);
 
+        //fft(sound, SAMPLES, false);
 
-        // printf("draw\n");
-        kitty_draw_sound(f, sound, SAMPLES, min, max);
+        kitty_draw_sound(0, sound, SAMPLES, min, max);
 
         f++;
         inverse ^= 1;
 
-        //usleep(1000000);
+        usleep(1000000);
     }
 
     stop_microphone();
