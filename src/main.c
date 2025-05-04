@@ -2,61 +2,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
-#include <ctype.h>
 #include <stdio.h>
-#include <string.h>
-#include <time.h>
-#include <termios.h>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <sys/time.h>
 #include <assert.h>
 #include <math.h>
-#include <alsa/asoundlib.h>
+#include <complex.h>
+#include <pthread.h>
 
 #include "fft.h"
+#include "draw.h"
 
-long kitty_id;
-uint8_t *fb;
-double complex *signal;
+#define WIDTH 512
+#define HEIGHT 128
 
-static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+double complex *sound;
 
-struct rgb
+void init_sound(int samples)
 {
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-};
-
-size_t base64_encode(const unsigned char *data, size_t input_length, char *encoded_data) {
-    size_t output_length = 4 * ((input_length + 2) / 3);
-    size_t i, j;
-
-    for (i = 0, j = 0; i < input_length;) {
-        uint32_t octet_a = i < input_length ? data[i++] : 0;
-        uint32_t octet_b = i < input_length ? data[i++] : 0;
-        uint32_t octet_c = i < input_length ? data[i++] : 0;
-
-        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-
-        encoded_data[j++] = base64_table[(triple >> 18) & 0x3F];
-        encoded_data[j++] = base64_table[(triple >> 12) & 0x3F];
-        encoded_data[j++] = base64_table[(triple >> 6) & 0x3F];
-        encoded_data[j++] = base64_table[triple & 0x3F];
-    }
-
-    // Add padding if needed
-    size_t mod_table[] = {0, 2, 1};
-    for (i = 0; i < mod_table[input_length % 3]; i++)
-        encoded_data[output_length - 1 - i] = '=';
-
-    return output_length;
-}
-
-void init_signal(int samples)
-{
-    signal = malloc(samples * sizeof(double complex));
+    sound = malloc(samples * sizeof(double complex));
 
     double pi = acos(-1);
     double coeff = 2.0 * pi / (double)samples;
@@ -64,52 +26,37 @@ void init_signal(int samples)
 
     for(int i = 0; i < samples; i++, c += coeff)
     {
-        signal[i] = sin(c) + cos(2 * c + pi / 3) + sin(5 * c - pi / 6);
+        sound[i] = sin(c) + cos(2 * c + pi / 3) + sin(5 * c - pi / 6);
     }
 }
 
-// Initialize Kitty graphics protocol
-void kitty_init(int width, int height) {
-    // Initialize random seed for image ID
-    srand(time(NULL));
-    kitty_id = rand();
-
-    // Allocate framebuffer memory
-    fb = malloc(width * height * 3);
-    memset(fb, 0, width * height * 3);
-}
-
-void kitty_update_display(int frame, int width, int height) {
-    // Calculate base64 encoded size
-    size_t bitmap_size = width * height * 3;
-    size_t encoded_size = 4 * ((bitmap_size + 2) / 3);
-    char *encoded_data = (char*)malloc(encoded_size + 1);
-
-    if (!encoded_data) {
-        fprintf(stderr, "Memory allocation failed\n");
+void get_range_sound(double complex* buffer, int n, double* min, double* max)
+{
+    if(n <= 0)
         return;
+
+    *max = cabs(sound[0]);
+    *min = cabs(sound[0]);
+
+    for(int i = 1; i < n; i++)
+    {
+        double mag = cabs(sound[i]);
+
+        if(mag < *min)
+            *min = mag;
+        else if(mag > *max)
+            *max = mag;
     }
-
-    // Encode the bitmap data to base64
-    base64_encode(fb, bitmap_size, encoded_data);
-    encoded_data[encoded_size] = '\0';  // Null-terminate the string
-
-    // Send Kitty Graphics Protocol escape sequence with base64 data
-    printf("\033_Ga=%c,i=%lu,f=24,s=%d,v=%d,q=2,c=30,r=10;", frame == 0 ? 'T' : 't',  kitty_id, width, height);
-    printf("%s", encoded_data);
-    printf("\033\\");
-    if (frame == 0) printf("\r\n");
-    fflush(stdout);
-
-    // Clean up
-    free(encoded_data);
 }
+
+#if __linux__
+#include <alsa/asoundlib.h>
 
 #define PCM_DEVICE "default"
 
 snd_pcm_t *pcm_handle;
 snd_pcm_hw_params_t *params;
-snd_pcm_uframes_t frames;
+snd_pcm_uframes_t SAMPLES;
 unsigned int sample_rate = 44100;
 int dir;
 
@@ -117,13 +64,13 @@ uint16_t *mic_buffer;
 int size;
 
 //open microphone
-void init_microphone()
+bool init_microphone()
 {
     int rc = snd_pcm_open(&pcm_handle, PCM_DEVICE, SND_PCM_STREAM_CAPTURE, 0);
     if (rc < 0) 
     {
         fprintf(stderr, "Error opening device PCM: %s\n", snd_strerror(rc));
-        exit(1);
+        return false;
     }
 
     snd_pcm_hw_params_malloc(&params);
@@ -138,130 +85,184 @@ void init_microphone()
     if (rc < 0) 
     {
         fprintf(stderr, "Error setting parameters: %s\n", snd_strerror(rc));
-        exit(1);
+        return false;
     }
 
-    snd_pcm_hw_params_get_period_size(params, &frames, &dir);
-    size = frames * 2; //16 bit
+    snd_pcm_hw_params_get_period_size(params, &SAMPLES, &dir);
+    size = SAMPLES * 2; //16 bit
     mic_buffer = (uint16_t*)malloc(size);
+
+    return true;
 }
+
+void stop_microphone()
+{
+    if(mic_buffer)
+    {
+        snd_pcm_drain(pcm_handle);
+        snd_pcm_close(pcm_handle);
+        free(mic_buffer);
+    }
+}
+
+void get_microphone_buffer(double complex* buffer, int samples)
+{
+    int rc = snd_pcm_readi(mic_buffer, buffer, samples);
+    if (rc == -EPIPE) {
+        fprintf(stderr, "overflow!\n");
+        snd_pcm_prepare(pcm_handle);
+    } else if (rc < 0) {
+        fprintf(stderr, "error microphone: %s\n", snd_strerror(rc));
+    } else if (rc != (int)samples) {
+        fprintf(stderr, "partial frames: %d frame\n", rc);
+    }
+
+    for(int i = 0; i < SAMPLES; i++)
+    {
+       buffer[i] = mic_buffer[i] / (double)(0xffff);
+    }
+}
+
+#elif defined(__APPLE__) && defined(__MACH__)
+#include <AudioToolbox/AudioToolbox.h>
+#define kBufferCount 3
+#define kBufferSize  WIDTH
+#define SAMPLES kBufferSize
+
+AudioQueueRef queue;
+OSStatus status;
+
+pthread_mutex_t mic_mutex;
+
+uint16_t* tmp_buffer;
+bool acquired = false;
+
+void HandleInputBuffer(
+    void *inUserData,
+    AudioQueueRef inAQ,
+    AudioQueueBufferRef inBuffer,
+    const AudioTimeStamp *inStartTime,
+    UInt32 inNumPackets,
+    const AudioStreamPacketDescription *inPacketDesc)
+{
+    uint16_t* new_buffer = inBuffer->mAudioData;
+
+    pthread_mutex_lock(&mic_mutex);
+
+    memcpy(tmp_buffer, new_buffer, SAMPLES * sizeof(uint16_t));
+    acquired = true;
+
+    pthread_mutex_unlock(&mic_mutex);
+
+    AudioQueueEnqueueBuffer(inAQ, inBuffer, 0, NULL);
+}
+
+bool init_microphone()
+{
+    AudioStreamBasicDescription format;
+    memset(&format, 0, sizeof(format));
+
+    format.mSampleRate = 44100;
+    format.mFormatID = kAudioFormatLinearPCM;
+    format.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+    format.mFramesPerPacket = 1;
+    format.mChannelsPerFrame = 1;
+    format.mBitsPerChannel = 16;
+    format.mBytesPerPacket = 2;
+    format.mBytesPerFrame = 2;
+
+    status = AudioQueueNewInput(
+        &format,
+        HandleInputBuffer,
+        NULL,
+        NULL,
+        kCFRunLoopCommonModes,
+        0,
+        &queue
+    );
+
+    if (status != noErr) {
+        fprintf(stderr, "Error creation AudioQueue: %d\n", status);
+        return false;
+    }
+
+    // Allocazione dei buffer
+    for (int i = 0; i < kBufferCount; ++i) {
+        AudioQueueBufferRef buffer;
+        AudioQueueAllocateBuffer(queue, kBufferSize, &buffer);
+        AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
+    }
+
+    AudioQueueStart(queue, NULL);
+
+    tmp_buffer = (uint16_t*)malloc(SAMPLES * sizeof(uint16_t));
+
+    return true;
+}
+
+void stop_microphone()
+{
+    if(status != noErr)
+    {
+        AudioQueueStop(queue, true);
+        AudioQueueDispose(queue, true);
+        free(tmp_buffer);
+    }
+}
+
+void get_microphone_buffer(double complex* buffer, int samples)
+{    
+    pthread_mutex_lock(&mic_mutex);
+
+    if(acquired)
+    {
+        for(int i = 0; i < SAMPLES; i++)
+            buffer[i] = tmp_buffer[i];
+
+        acquired = false;
+    }
+
+    pthread_mutex_unlock(&mic_mutex);
+}
+
+#endif
 
 int main(int argc, char* argv[])
 {
-    int w = 128;
-    int h = 128;
-
-    kitty_init(w, h);
+    printf("kitty_init\n");
+    kitty_init(WIDTH, HEIGHT);
+    printf("init_microphone\n");
     init_microphone();
+    printf("init_sound\n");
+    init_sound(SAMPLES);
 
-    int n = frames;
+    int f = 0, inverse = 0;
+    double max, min;
 
-    init_signal(n);
-
-    int f = 0, frame = 0, inverse = 0;
-    double max, min, range;
-
-    while(f < 20)
+    while(true)
     {
-        int rc = snd_pcm_readi(pcm_handle, mic_buffer, frames);
-        if (rc == -EPIPE) {
-            fprintf(stderr, "overflow!\n");
-            snd_pcm_prepare(pcm_handle);
-        } else if (rc < 0) {
-            fprintf(stderr, "error microphone: %s\n", snd_strerror(rc));
-        } else if (rc != (int)frames) {
-            fprintf(stderr, "partial frames: %d frame\n", rc);
-        }
+        // printf("mic\n");
+        get_microphone_buffer(sound, SAMPLES);
 
-        for(int i = 0; i < frames; i++)
-        {
-            signal[i] = mic_buffer[i] / (double)(0xffff);
-        }
+        // printf("fft\n");
+        fft(sound, SAMPLES, false);
 
-        struct rgb* ptr2 = fb;
-        struct rgb* ptr;
+        //printf("range\n");
+        get_range_sound(sound, SAMPLES, &min, &max);
+        //printf("%f %f\n", min, max);
 
-        ptr2 += w * (h - 1);
-        
-        memset(fb, 0, w * h * 3);
-        fft(signal, n, inverse);
 
-        if(inverse)
-        {
-            max = creal(signal[0]);
-            min = creal(signal[0]);
-
-            for(int i = 1; i < n; i++)
-            {
-                double mag = creal(signal[i]);
-    
-                if(mag < min)
-                    min = mag;
-                else if(mag > max)
-                    max = mag;
-            }
-        }
-        else
-        {
-            max = cabs(signal[0]);
-            min = cabs(signal[0]);
-
-            for(int i = 1; i < n; i++)
-            {
-                double mag = cabs(signal[i]);
-    
-                if(mag < min)
-                    min = mag;
-                else if(mag > max)
-                    max = mag;
-            }
-        }
-
-        range = max - min;
-
-        if(!inverse)
-        {
-            for(int i = 0; i < n; i++)
-            {
-                double magnitude = (cabs(signal[i]) - min) / range;
-                
-                ptr = (ptr2 - w * (int)((h - 1) * magnitude));// magnitude));
-                
-                ptr->r = 0;
-                ptr->g = 255;
-                ptr->b = 0;
-
-                ptr2++;
-            }
-        }
-        else
-        {
-            for(int i = 0; i < n; i++)
-            {
-                double magnitude = (creal(signal[i]) - min) / range;
-
-                ptr = (ptr2 - w * (int)((h - 1) * magnitude));
-                
-                ptr->r = 0;
-                ptr->g = 255;
-                ptr->b = 0;
-
-                ptr2++;
-            }
-        }
-
-        kitty_update_display(frame, w, h);
+        // printf("draw\n");
+        kitty_draw_sound(f, sound, SAMPLES, min, max);
 
         f++;
-        //inverse ^= 1;
+        inverse ^= 1;
 
-        usleep(1000000);
+        //usleep(1000000);
     }
 
-    snd_pcm_drain(pcm_handle);
-    snd_pcm_close(pcm_handle);
-    free(mic_buffer);
-    free(fb);
+    stop_microphone();
+    kitty_stop();
 
     return 0;
 }

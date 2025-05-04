@@ -1,8 +1,9 @@
 # Makefile for fft-spectrum project
 
 # Compiler and flags
+#-lasound
 CC = gcc
-LDFLAGS = -lm -lasound
+LDFLAGS = -lm  -framework AudioToolbox -framework CoreFoundation
 CFLAGS = -Wall -Wextra -O2
 
 # Directories
