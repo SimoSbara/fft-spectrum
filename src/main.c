@@ -3,44 +3,50 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <stdio.h>
-#include <assert.h>
+#include <termios.h>
 #include <math.h>
 #include <complex.h>
-#include <pthread.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
 
 #include "fft.h"
 #include "draw.h"
+#include "microphone.h"
 
-#define WIDTH 512
+#define WIDTH 256
 #define HEIGHT 128
+#define NSAMPLES 64
 
-double complex *sound;
+bool dofft = false;
+bool exit_req = false;
 
-void init_sound(int samples)
+void generate_sound(int16_t* buffer, int samples)
 {
-    sound = malloc(samples * sizeof(double complex));
-
     double pi = acos(-1);
-    double coeff = 2.0 * pi / (double)samples;
+    double pi2 = 2.0 * pi;
+    double coeff = pi2 / (double)samples;
+
     double c = 0;
+    double codomain = 1.0 / pi2;
 
     for(int i = 0; i < samples; i++, c += coeff)
     {
-        sound[i] = sin(c) + cos(2 * c + pi / 3) + sin(5 * c - pi / 6);
+        double val = (sin(c) + cos(2 * c + pi / 3) + sin(5 * c - pi / 6)) * codomain;
+        buffer[i] = val * (UINT16_MAX) - INT16_MAX;
     }
 }
 
-void get_range_sound(double complex* buffer, int n, double* min, double* max)
+void get_range_sound(int16_t* buffer, uint32_t n, int16_t* min, int16_t* max)
 {
-    if(n <= 0)
+    if(n == 0)
         return;
 
-    *max = cabs(sound[0]);
-    *min = cabs(sound[0]);
+    *max = buffer[0];
+    *min = buffer[0];
 
     for(int i = 1; i < n; i++)
     {
-        double mag = cabs(sound[i]);
+        int16_t mag = buffer[i];
 
         if(mag < *min)
             *min = mag;
@@ -49,222 +55,166 @@ void get_range_sound(double complex* buffer, int n, double* min, double* max)
     }
 }
 
-#if __linux__
-#include <alsa/asoundlib.h>
-
-#define PCM_DEVICE "default"
-
-snd_pcm_t *pcm_handle;
-snd_pcm_hw_params_t *params;
-snd_pcm_uframes_t SAMPLES = WIDTH;
-unsigned int sample_rate = 44100;
-int dir;
-
-uint16_t *mic_buffer;
-int size;
-
-//open microphone
-bool init_microphone()
+void get_range_fft(double complex* fftbuffer, uint32_t n, double* min, double* max)
 {
-    int rc = snd_pcm_open(&pcm_handle, PCM_DEVICE, SND_PCM_STREAM_CAPTURE, 0);
-    if (rc < 0) 
+    if(n == 0)
+        return;
+
+    *max = cabs(fftbuffer[0]);
+    *min = *max;
+
+    for(int i = 1; i < n; i++)
     {
-        fprintf(stderr, "Error opening device PCM: %s\n", snd_strerror(rc));
-        return false;
-    }
+        double mag = cabs(fftbuffer[i]);
 
-    snd_pcm_hw_params_malloc(&params);
-    snd_pcm_hw_params_any(pcm_handle, params);
-    snd_pcm_hw_params_set_access(pcm_handle, params, SND_PCM_ACCESS_RW_INTERLEAVED);
-    snd_pcm_hw_params_set_format(pcm_handle, params, SND_PCM_FORMAT_S16_LE);
-    snd_pcm_hw_params_set_channels(pcm_handle, params, 1);
-    snd_pcm_hw_params_set_rate_near(pcm_handle, params, &sample_rate, &dir);
-
-    // Parameters
-    rc = snd_pcm_hw_params(pcm_handle, params);
-    if (rc < 0)
-    {
-        fprintf(stderr, "Error setting parameters: %s\n", snd_strerror(rc));
-        return false;
-    }
-
-    snd_pcm_hw_params_get_period_size(params, &SAMPLES, &dir);
-    size = SAMPLES * 2; //16 bit
-    mic_buffer = (uint16_t*)malloc(size);
-
-    return true;
-}
-
-void stop_microphone()
-{
-    if(mic_buffer)
-    {
-        snd_pcm_drain(pcm_handle);
-        snd_pcm_close(pcm_handle);
-        free(mic_buffer);
+        if(mag < *min)
+            *min = mag;
+        else if(mag > *max)
+            *max = mag;
     }
 }
 
-void get_microphone_buffer(double complex* buffer, int samples)
+void convert_fft_buffer(int16_t* buffer, double complex* fftbuffer, int n, bool tofft)
 {
-    int rc = snd_pcm_readi(mic_buffer, buffer, samples);
-
-    if (rc < 0)
+    if(tofft)
     {
-        switch(rc)
+        int16_t min, max;
+        get_range_sound(buffer, n, &min, &max);
+
+        double range = max - min;
+
+        //printf("tofft %d %d %f\n", min, max, range);
+
+        for(int i = 0; i < n; i++)
         {
-            case -EPIPE:
-                fprintf(stderr, "Overflow!\n");
-                snd_pcm_prepare(pcm_handle);
-            break;
-            default:
-                fprintf(stderr, "Error microphone: %s\n", snd_strerror(rc)); 
-            break;
+            int val = buffer[i];
+
+            //[0, 1]
+            fftbuffer[i] = (double)(val - min) / (double)range;
         }
     }
-    else if (rc != (int)samples) 
-        fprintf(stderr, "Partial frames: %d frame\n", rc);
-
-    for(int i = 0; i < SAMPLES; i++)
-       buffer[i] = mic_buffer[i] / (double)(0xffff);
-}
-
-#elif defined(__APPLE__) && defined(__MACH__)
-#include <AudioToolbox/AudioToolbox.h>
-#define kBufferCount 3
-#define kBufferSize  WIDTH
-#define SAMPLES kBufferSize
-
-AudioQueueRef queue;
-OSStatus status;
-
-pthread_mutex_t mic_mutex;
-
-uint16_t* tmp_buffer;
-bool acquired = false;
-
-void HandleInputBuffer(
-    void *inUserData,
-    AudioQueueRef inAQ,
-    AudioQueueBufferRef inBuffer,
-    const AudioTimeStamp *inStartTime,
-    UInt32 inNumPackets,
-    const AudioStreamPacketDescription *inPacketDesc)
-{
-    uint16_t* new_buffer = inBuffer->mAudioData;
-
-    pthread_mutex_lock(&mic_mutex);
-
-    memcpy(tmp_buffer, new_buffer, SAMPLES * sizeof(uint16_t));
-    acquired = true;
-
-    pthread_mutex_unlock(&mic_mutex);
-
-    AudioQueueEnqueueBuffer(inAQ, inBuffer, 0, NULL);
-}
-
-bool init_microphone()
-{
-    AudioStreamBasicDescription format;
-    memset(&format, 0, sizeof(format));
-
-    format.mSampleRate = 44100;
-    format.mFormatID = kAudioFormatLinearPCM;
-    format.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
-    format.mFramesPerPacket = 1;
-    format.mChannelsPerFrame = 1;
-    format.mBitsPerChannel = 16;
-    format.mBytesPerPacket = 2;
-    format.mBytesPerFrame = 2;
-
-    status = AudioQueueNewInput(
-        &format,
-        HandleInputBuffer,
-        NULL,
-        NULL,
-        kCFRunLoopCommonModes,
-        0,
-        &queue
-    );
-
-    if (status != noErr) {
-        fprintf(stderr, "Error creation AudioQueue: %d\n", status);
-        return false;
-    }
-
-    // Allocate buffer
-    for (int i = 0; i < kBufferCount; ++i) {
-        AudioQueueBufferRef buffer;
-        AudioQueueAllocateBuffer(queue, kBufferSize, &buffer);
-        AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
-    }
-
-    AudioQueueStart(queue, NULL);
-
-    tmp_buffer = (uint16_t*)malloc(SAMPLES * sizeof(uint16_t));
-
-    return true;
-}
-
-void stop_microphone()
-{
-    if(status != noErr)
+    else
     {
-        AudioQueueStop(queue, true);
-        AudioQueueDispose(queue, true);
-        free(tmp_buffer);
+        double min, max, range;
+        get_range_fft(fftbuffer, n, &min, &max);
+        range = max - min;
+
+        double uint16max = UINT16_MAX;
+
+        //printf("!tofft %f %f %f\n", min, max, range);
+
+        for(int i = 0; i < n; i++)
+        {
+            double mag = cabs(fftbuffer[i]);
+
+            //[-2^16 - 1, 2^16 - 1]
+
+            int16_t val = (uint16max * ((mag - min) / range)) - INT16_MAX;
+
+            //printf("val %d\n", val);
+
+            buffer[i] = val;
+        }
     }
 }
 
-void get_microphone_buffer(double complex* buffer, int samples)
-{    
-    pthread_mutex_lock(&mic_mutex);
+//implementation by antirez c64-kitty
+int kbhit() 
+{
+    int bytesWaiting;
+    ioctl(STDIN_FILENO, FIONREAD, &bytesWaiting);
+    return bytesWaiting;
+}
 
-    if(acquired)
+void listen_keyboard_inputs()
+{
+    int new_input = kbhit();
+    
+    if(!new_input)
+        return;
+
+    char ch = getchar();
+
+    //printf("new input %c\n", ch);
+
+    switch(ch)
     {
-        for(int i = 0; i < SAMPLES; i++)
-            buffer[i] = tmp_buffer[i];
-
-        acquired = false;
+        case 'f': dofft ^= 1; break;
+        case 27: exit_req = true; break;
     }
-
-    pthread_mutex_unlock(&mic_mutex);
 }
 
-#endif
+//implementation by antirez c64-kitty
+// Terminal keyboard input handling
+struct termios orig_termios;
+
+void disable_raw_mode() {
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+}
+
+void enable_raw_mode() 
+{
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    atexit(disable_raw_mode);
+
+    struct termios raw = orig_termios;
+    raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= ~(OPOST);
+    raw.c_cflag |= (CS8);
+    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
 
 int main(int argc, char* argv[])
 {
-    printf("kitty_init\n");
+    int f = 0, inverse = 0;
+    int16_t max, min;
+
+    //printf("kitty_init\n");
     kitty_init(WIDTH, HEIGHT);
 
-    printf("init_microphone\n");
-    if(!init_microphone())
+    //printf("init_microphone\n");
+    if(!init_microphone(NSAMPLES))
         return 1;
 
-    printf("init_sound\n");
-    init_sound(SAMPLES);
+    //printf("init_sound\n");
+    //init_sound(NSAMPLES);
 
-    int f = 0, inverse = 0;
-    double max, min;
+    enable_raw_mode();
 
-    while(f < 20)
+    int16_t *sound = malloc(NSAMPLES * sizeof(int16_t));
+    double complex *fftbuffer = malloc(NSAMPLES * sizeof(double complex));
+
+    while(!exit_req)
     {
-        get_microphone_buffer(sound, SAMPLES);
-        get_range_sound(sound, SAMPLES, &min, &max);
+        listen_keyboard_inputs();
+        get_microphone_buffer(sound, NSAMPLES);
 
-        //fft(sound, SAMPLES, false);
+        if(dofft)
+        {
+            convert_fft_buffer(sound, fftbuffer, NSAMPLES, true);
+            fft(fftbuffer, NSAMPLES, false);
+            convert_fft_buffer(sound, fftbuffer, NSAMPLES, false);
+        }
 
-        kitty_draw_sound(0, sound, SAMPLES, min, max);
+        get_range_sound(sound, NSAMPLES, &min, &max);
+
+       //min = INT16_MIN;
+       //max = INT16_MAX;
+
+        kitty_draw_sound(f, sound, NSAMPLES, min, max);
 
         f++;
-        inverse ^= 1;
-
-        usleep(1000000);
     }
 
     stop_microphone();
     kitty_stop();
+
+    free(fftbuffer);
+    free(sound);
 
     return 0;
 }

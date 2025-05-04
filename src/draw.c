@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/time.h>
 
 #include "draw.h"
@@ -17,8 +18,11 @@ struct rgb
 long kitty_id;
 int w, h;
 uint8_t *fb = NULL;
+
+//from antirez implementation in c64-kitty
 static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+//from antirez implementation in c64-kitty
 size_t base64_encode(const unsigned char *data, size_t input_length, char *encoded_data) {
     size_t output_length = 4 * ((input_length + 2) / 3);
     size_t i, j;
@@ -44,6 +48,7 @@ size_t base64_encode(const unsigned char *data, size_t input_length, char *encod
     return output_length;
 }
 
+//from antirez implementation in c64-kitty
 // Initialize Kitty graphics protocol
 void kitty_init(int width, int height) 
 {
@@ -68,6 +73,7 @@ void kitty_stop()
     }
 }
 
+//from antirez implementation in c64-kitty
 void kitty_update_display(int frame, int width, int height) 
 {
     // Calculate base64 encoded size
@@ -95,29 +101,29 @@ void kitty_update_display(int frame, int width, int height)
     free(encoded_data);
 }
 
-void kitty_draw_sound(int frame, double complex* buffer, int samples, double min, double max)
+void kitty_draw_sound(int frame, int16_t* buffer, int samples, double min, double max)
 {
     double range = max - min;
 
     if(range == 0 || buffer == NULL || samples <= 1)
         return;
 
-    double mag1, mag2;
-    int x1, x2, y1, y2;
+    double mag;
+    int x, y;
 
     memset(fb, 0, w * h * 3);
 
-    for(int i = 0; i < samples - 1; i++)
-    {
-        mag1 = (cabs(buffer[i]) - min) / range;
-        mag2 = (cabs(buffer[i + 1]) - min) / range;
-        
-        x1 = i;
-        x2 = i + 1;
-        y1 = (double)(h - 1) - mag1 * (double)(h - 1);
-        y2 = (double)(h - 1) - mag2 * (double)(h - 1);
+    double coeff = (double)w / (double)samples;
+    double c = 0;
 
-        draw_line(x1, x2, y1, y2);
+    for(int i = 0; i < samples; i++, c += coeff)
+    {
+        mag = (cabs(buffer[i]) - min) / range;
+
+        x = c;
+        y = (double)(h - 1) - mag * (double)(h - 1);
+
+        draw_line(x, x, y, h - 1);
     }
 
     kitty_update_display(0, w, h);
@@ -130,17 +136,34 @@ void draw_line(int x1, int x2, int y1, int y2)
 
     // line between two points
     int dx = x2 - x1;
-    int dy = y2 - y1;
-    double m = dy/dx;
 
-    for(x = x1; x <= x2; x++)
+    if(dx == 0)
     {
-        y = m * (x - x1) + y1;
+        x = x1;
 
-        pixel = ptr + y * w + x;
+        for(y = y1; y <= y2; y++)
+        {
+            pixel = ptr + y * w + x;
 
-        pixel->r = 0;
-        pixel->g = 255;
-        pixel->b = 0;
+            pixel->r = 0;
+            pixel->g = 255;
+            pixel->b = 0;
+        }
+    }
+    else
+    {
+        int dy = y2 - y1;
+        double m = dy/dx;
+
+        for(x = x1; x <= x2; x++)
+        {
+            y = m * (x - x1) + y1;
+
+            pixel = ptr + y * w + x;
+
+            pixel->r = 0;
+            pixel->g = 255;
+            pixel->b = 0;
+        }
     }
 }

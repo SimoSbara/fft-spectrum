@@ -4,40 +4,44 @@
 #include <math.h>
 #include "fft.h"
 
+//https://cp-algorithms.com/algebra/fft.html#implementation
 void fft(double complex* a, int n, bool invert) 
 {
     double PI = acos(-1);
-    if (n <= 1)
-        return;
 
-    double complex* a0 = malloc(n / 2 * sizeof(double complex));
-    double complex* a1 = malloc(n / 2 * sizeof(double complex));
-    
-    for (int i = 0; 2 * i < n; i++) 
-    {
-        a0[i] = a[2*i];
-        a1[i] = a[2*i+1];
-    }
-    fft(a0, n / 2, invert);
-    fft(a1, n / 2, invert);
+    for (int i = 1, j = 0; i < n; i++) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
 
-    double ang = 2 * PI / n * (invert ? -1 : 1);
-    double complex w = 1, wn = cos(ang) + I * sin(ang);
-
-    for (int i = 0; 2 * i < n; i++) 
-    {
-        a[i] = a0[i] + w * a1[i];
-        a[i + n/2] = a0[i] - w * a1[i];
-
-        if (invert) 
+        if (i < j)
         {
-            a[i] /= 2;
-            a[i + n/2] /= 2;
+            double tmp = a[i];
+            a[i] = a[j];
+            a[j] = tmp;
         }
-
-        w *= wn;
     }
 
-    free(a0);
-    free(a1);
+    for (int len = 2; len <= n; len <<= 1) 
+    {
+        double ang = 2 * PI / len * (invert ? -1 : 1);
+        double complex wlen = cos(ang) + I * sin(ang);
+
+        for (int i = 0; i < n; i += len) {
+            double complex w = 1;
+            for (int j = 0; j < len / 2; j++) {
+                double complex  u = a[i+j], v = a[i+j+len/2] * w;
+                a[i+j] = u + v;
+                a[i+j+len/2] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+
+    if (invert) 
+    {
+        for(int i = 0; i < n; i++)
+            a[i] /= (double)n;
+    }
 }
