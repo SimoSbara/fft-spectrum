@@ -118,7 +118,7 @@ void kitty_draw_sound(int frame, int16_t* buffer, int samples, double min, doubl
 
     for(int i = 0; i < samples; i++, c += coeff)
     {
-        mag = (cabs(buffer[i]) - min) / range;
+        mag = (buffer[i] - min) / range;
 
         x = c;
         y = (double)(h - 1) - mag * (double)(h - 1);
