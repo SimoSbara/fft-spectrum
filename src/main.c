@@ -15,7 +15,8 @@
 
 #define WIDTH 256
 #define HEIGHT 128
-#define NSAMPLES 64
+#define NSAMPLES 256
+#define DB_NOISE_THRESH -80
 
 bool dofft = false;
 bool exit_req = false;
@@ -55,17 +56,17 @@ void get_range_sound(int16_t* buffer, uint32_t n, int16_t* min, int16_t* max)
     }
 }
 
-void get_range_fft(double complex* fftbuffer, uint32_t n, double* min, double* max)
+void get_range_fft(double* fftbuffer, uint32_t n, double* min, double* max)
 {
     if(n == 0)
         return;
 
-    *max = cabs(fftbuffer[0]);
+    *max = fftbuffer[0];
     *min = *max;
 
     for(int i = 1; i < n; i++)
     {
-        double mag = cabs(fftbuffer[i]);
+        double mag = fftbuffer[i];
 
         if(mag < *min)
             *min = mag;
@@ -80,15 +81,11 @@ void convert_fft_buffer(int16_t* buffer, double complex* fftbuffer, int n, bool 
     {
         int16_t min, max;
         get_range_sound(buffer, n, &min, &max);
-
         double range = max - min;
-
-        //printf("tofft %d %d %f\n", min, max, range);
 
         for(int i = 0; i < n; i++)
         {
             int val = buffer[i];
-
             //[0, 1]
             fftbuffer[i] = (double)(val - min) / (double)range;
         }
@@ -96,24 +93,43 @@ void convert_fft_buffer(int16_t* buffer, double complex* fftbuffer, int n, bool 
     else
     {
         double min, max, range;
-        get_range_fft(fftbuffer, n, &min, &max);
+        double uint16max = UINT16_MAX - 1; 
+        double j = 0;
+        
+        //the fft produces N/2 data from 0 Hz to Nyquist frequency samplerate / 2
+        //in my case 44100 Hz / 2
+        //im also using the log scale to get less noise
+
+        //magnitudes
+        for(int i = 0; i < n / 2; i++)
+            fftbuffer[i] = pow(cabs(fftbuffer[i]), 2); //sqrt(Re^2 + Im^2) is the magnitude  
+
+        get_range_fft(fftbuffer, n / 2, &min, &max);
         range = max - min;
 
-        double uint16max = UINT16_MAX;
-
-        //printf("!tofft %f %f %f\n", min, max, range);
-
-        for(int i = 0; i < n; i++)
+        //converting values to decibel
+        for(int i = 0; i < n / 2; i++)
         {
-            double mag = cabs(fftbuffer[i]);
+            double val = (fftbuffer[i] - min) / range;
+            
+            val = 20.0 * log10(val + 1e-12);
 
-            //[-2^16 - 1, 2^16 - 1]
+            if(val < DB_NOISE_THRESH)
+                val = DB_NOISE_THRESH;
 
-            int16_t val = (uint16max * ((mag - min) / range)) - INT16_MAX;
+            fftbuffer[i] = val; 
+        }
+ 
+        min = DB_NOISE_THRESH;
+        max = 0;
+        range = -DB_NOISE_THRESH;      
 
-            //printf("val %d\n", val);
+        for(int i = 0; i < n; i++, j += 0.5)
+        {
+            double mag = fftbuffer[(int)j];
 
-            buffer[i] = val;
+            //[-2^15, 2^15 - 1] is the range of values in the final buffer
+            buffer[i] = (uint16max * ((mag - min) / range)) - INT16_MAX;
         }
     }
 }
@@ -134,8 +150,6 @@ void listen_keyboard_inputs()
         return;
 
     char ch = getchar();
-
-    //printf("new input %c\n", ch);
 
     switch(ch)
     {
@@ -176,21 +190,27 @@ int main(int argc, char* argv[])
     //printf("kitty_init\n");
     kitty_init(WIDTH, HEIGHT);
 
-    //printf("init_microphone\n");
+    printf("init_microphone\n");
     if(!init_microphone(NSAMPLES))
+    {
+        printf("Failed to init microphone, exiting...\n");
         return 1;
+    }
 
-    //printf("init_sound\n");
-    //init_sound(NSAMPLES);
-
+    printf("enable_raw_mode\n");
     enable_raw_mode();
+
+    printf("Press F to toggle Fourier Transform visualization, ESC for exit.\r\n");
 
     int16_t *sound = malloc(NSAMPLES * sizeof(int16_t));
     double complex *fftbuffer = malloc(NSAMPLES * sizeof(double complex));
 
     while(!exit_req)
     {
+        //printf("listen_keyboard_inputs");
         listen_keyboard_inputs();
+
+        //printf("get_microphone_buffer");
         get_microphone_buffer(sound, NSAMPLES);
 
         if(dofft)
@@ -198,16 +218,22 @@ int main(int argc, char* argv[])
             convert_fft_buffer(sound, fftbuffer, NSAMPLES, true);
             fft(fftbuffer, NSAMPLES, false);
             convert_fft_buffer(sound, fftbuffer, NSAMPLES, false);
+
+            min = INT16_MIN;
+            max = INT16_MAX;
+        
+            kitty_draw_fft(f, sound, NSAMPLES, min, max);
+        }
+        else
+        {
+            min = INT16_MIN / 16;
+            max = INT16_MAX / 16;
+
+            kitty_draw_sound(f, sound, NSAMPLES, min, max);
         }
 
-        get_range_sound(sound, NSAMPLES, &min, &max);
-
-       //min = INT16_MIN;
-       //max = INT16_MAX;
-
-        kitty_draw_sound(f, sound, NSAMPLES, min, max);
-
         f++;
+        usleep(16000);
     }
 
     stop_microphone();

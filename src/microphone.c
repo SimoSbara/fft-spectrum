@@ -123,6 +123,8 @@ bool init_microphone(int samples)
     format.mBytesPerPacket = 2;
     format.mBytesPerFrame = 2;
 
+    printf("AudioQueueNewInput\n");
+
     status = AudioQueueNewInput(
         &format,
         HandleInputBuffer,
@@ -138,6 +140,8 @@ bool init_microphone(int samples)
         return false;
     }
 
+    printf("kBufferCount\n");
+
     // Allocate buffer
     for (int i = 0; i < kBufferCount; ++i) {
         AudioQueueBufferRef buffer;
@@ -145,21 +149,22 @@ bool init_microphone(int samples)
         AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
     }
 
+    printf("AudioQueueStart: %d\n", kBufferSize);
     AudioQueueStart(queue, NULL);
 
-    mic_buffer = (int16_t*)malloc(kBufferSize);
+    printf("malloc(kBufferSize)\n");
+    mic_buffer = malloc(kBufferSize);
 
     return true;
 }
 
 void stop_microphone()
 {
-    if(status != noErr)
-    {
-        AudioQueueStop(queue, true);
-        AudioQueueDispose(queue, true);
+    AudioQueueStop(queue, true);
+    AudioQueueDispose(queue, true);
+
+    if(mic_buffer)
         free(mic_buffer);
-    }
 }
 
 void get_microphone_buffer(int16_t* buffer, int samples)

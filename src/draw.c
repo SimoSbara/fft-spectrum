@@ -5,15 +5,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <math.h>
 
 #include "draw.h"
-
-struct rgb
-{
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-};
 
 long kitty_id;
 int w, h;
@@ -101,35 +95,72 @@ void kitty_update_display(int frame, int width, int height)
     free(encoded_data);
 }
 
-void kitty_draw_sound(int frame, int16_t* buffer, int samples, double min, double max)
+void kitty_draw_fft(int frame, int16_t* buffer, int samples, double min, double max)
 {
-    double range = max - min;
+    double x, mag, range = max - min;
+    int y1, y2;
+    struct rgb color;
 
     if(range == 0 || buffer == NULL || samples <= 1)
         return;
 
-    double mag;
-    int x, y;
-
+    double coeff = (double)w / (double)samples;
+    int h1 = h - 1;  
+    
     memset(fb, 0, w * h * 3);
 
-    double coeff = (double)w / (double)samples;
-    double c = 0;
+    //magenta
+    color.r = 255;
+    color.g = 0;
+    color.b = 255;
 
-    for(int i = 0; i < samples; i++, c += coeff)
+    y1 = h1;
+    x = 0;
+
+    for(int i = 0; i < samples; i++, x += coeff)
     {
-        mag = (buffer[i] - min) / range;
+        mag = fmax(fmin((buffer[i] - min) / range, 1), 0);
+        y2 = h1 - mag * h1;
 
-        x = c;
-        y = (double)(h - 1) - mag * (double)(h - 1);
-
-        draw_line(x, x, y, h - 1);
+        draw_line(x, x, y1, y2, color);
     }
 
-    kitty_update_display(0, w, h);
+    kitty_update_display(frame, w, h);
 }
 
-void draw_line(int x1, int x2, int y1, int y2)
+void kitty_draw_sound(int frame, int16_t* buffer, int samples, double min, double max)
+{
+    double x, mag, range = max - min;
+    int y1, y2;
+    struct rgb color;
+    
+    if(range == 0 || buffer == NULL || samples <= 1)
+        return;
+
+    double coeff = (double)w / (double)samples;
+    double h1 = h - 1;
+    
+    memset(fb, 0, w * h * 3);
+    
+    color.r = 0;
+    color.g = 255;
+    color.b = 0;
+
+    y1 = h / 2;
+    x = 0;
+
+    for(int i = 0; i < samples; i++, x += coeff)
+    {
+        mag = fmax(fmin((buffer[i] - min) / range, 1), 0);
+        y2 = mag * h1;
+
+        draw_line(x, x, y1, y2, color);
+    }
+
+    kitty_update_display(frame, w, h);
+}
+
+void draw_line(int x1, int x2, int y1, int y2, struct rgb color)
 {
     struct rgb* ptr = fb, *pixel;
     int x, y;
@@ -137,17 +168,26 @@ void draw_line(int x1, int x2, int y1, int y2)
     // line between two points
     int dx = x2 - x1;
 
+    if(y1 > y2)
+    {
+	int tmp = y1;
+    	y1 = y2;
+        y2 = tmp;
+    }
+
     if(dx == 0)
     {
         x = x1;
 
+        pixel = ptr + y1 * w + x; 	
+
         for(y = y1; y <= y2; y++)
         {
-            pixel = ptr + y * w + x;
+            pixel->r = color.r;
+            pixel->g = color.g;
+            pixel->b = color.b;
 
-            pixel->r = 0;
-            pixel->g = 255;
-            pixel->b = 0;
+            pixel += w;
         }
     }
     else
@@ -161,9 +201,9 @@ void draw_line(int x1, int x2, int y1, int y2)
 
             pixel = ptr + y * w + x;
 
-            pixel->r = 0;
-            pixel->g = 255;
-            pixel->b = 0;
+            pixel->r = color.r;
+            pixel->g = color.g;
+            pixel->b = color.b;
         }
     }
 }
