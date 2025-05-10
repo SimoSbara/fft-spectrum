@@ -6,6 +6,7 @@
 #include <termios.h>
 #include <math.h>
 #include <complex.h>
+#include <string.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 
@@ -15,7 +16,7 @@
 
 #define WIDTH 256
 #define HEIGHT 128
-#define NSAMPLES 256
+#define NSAMPLES 2048
 #define DB_NOISE_THRESH -80
 
 bool dofft = false;
@@ -182,28 +183,63 @@ void enable_raw_mode()
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 }
 
+#if __linux__
+void show_help()
+{
+    printf("HELP: \"fft-spectrum --device <alsa-device>\"\n");
+    printf("HELP: You can use command: \"arecord -l\" to get the list of microphones.\n");
+    printf("HELP: You can use command: \"fft-spectrum --device default\" if you want to select the default microphone.\n");
+    printf("EXAMPLE: fft-spectrum --device hw:0,1\n");
+}
+#endif
+
 int main(int argc, char* argv[])
 {
-    int f = 0, inverse = 0;
-    int16_t max, min;
+#if __linux__
+    if(argc < 2)
+    {
+        show_help();
+        return 1;
+    }
+
+    bool found = false;
+
+    for(int i = 0; i < argc - 1; i++)
+    {
+        if(!strcmp(argv[i], "--device"))
+        {
+            set_microphone(argv[i + 1]);
+            found = true;
+            break;
+        }
+    }
+
+    if(!found)
+    {
+        show_help();
+        return 1;
+    }
+#endif
 
     //printf("kitty_init\n");
     kitty_init(WIDTH, HEIGHT);
 
-    printf("init_microphone\n");
+    // printf("init_microphone\n");
     if(!init_microphone(NSAMPLES))
     {
         printf("Failed to init microphone, exiting...\n");
         return 1;
     }
 
-    printf("enable_raw_mode\n");
+    // printf("enable_raw_mode\n");
     enable_raw_mode();
 
     printf("Press F to toggle Fourier Transform visualization, ESC for exit.\r\n");
 
     int16_t *sound = malloc(NSAMPLES * sizeof(int16_t));
     double complex *fftbuffer = malloc(NSAMPLES * sizeof(double complex));
+    int f = 0, inverse = 0;
+    int16_t max, min;
 
     while(!exit_req)
     {

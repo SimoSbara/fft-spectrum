@@ -3,8 +3,13 @@
 #if __linux__
 #include <alsa/asoundlib.h>
 #include <math.h>
+#include <stdio.h>
 
 #define PCM_DEVICE "default"
+#define MAX_SOUND_CARDS 8
+#define MAX_MICROPHONES_PER_CARD 8
+
+char pcm_device[64];
 
 snd_pcm_t *pcm_handle;
 snd_pcm_hw_params_t *params;
@@ -12,10 +17,16 @@ snd_pcm_uframes_t frames;
 unsigned int sample_rate = 44100;
 int dir;
 
+//set manually
+void set_microphone(char* dev)
+{
+    strcpy(pcm_device, dev);
+}
+
 //open microphone
 bool init_microphone(int samples)
 {
-    int rc = snd_pcm_open(&pcm_handle, PCM_DEVICE, SND_PCM_STREAM_CAPTURE, 0);
+    int rc = snd_pcm_open(&pcm_handle, pcm_device, SND_PCM_STREAM_CAPTURE, 0);
     if (rc < 0) 
     {
         fprintf(stderr, "Error opening device PCM: %s\n", snd_strerror(rc));
@@ -52,6 +63,8 @@ void stop_microphone()
 
 void get_microphone_buffer(int16_t* buffer, int samples)
 {
+    //printf("get_microphone_buffer()\n");
+
     int rc = snd_pcm_readi(pcm_handle, buffer, fmin(samples, frames));
 
     if (rc < 0)
