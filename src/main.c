@@ -46,7 +46,7 @@ void get_range_sound(int16_t* buffer, uint32_t n, int16_t* min, int16_t* max)
     *max = buffer[0];
     *min = buffer[0];
 
-    for(int i = 1; i < n; i++)
+    for(uint32_t i = 1; i < n; i++)
     {
         int16_t mag = buffer[i];
 
@@ -57,7 +57,7 @@ void get_range_sound(int16_t* buffer, uint32_t n, int16_t* min, int16_t* max)
     }
 }
 
-void get_range_fft(double* fftbuffer, uint32_t n, double* min, double* max)
+void get_range_fft(double complex* fftbuffer, uint32_t n, double* min, double* max)
 {
     if(n == 0)
         return;
@@ -65,7 +65,7 @@ void get_range_fft(double* fftbuffer, uint32_t n, double* min, double* max)
     *max = fftbuffer[0];
     *min = *max;
 
-    for(int i = 1; i < n; i++)
+    for(uint32_t i = 1; i < n; i++)
     {
         double mag = fftbuffer[i];
 
@@ -238,7 +238,7 @@ int main(int argc, char* argv[])
 
     int16_t *sound = malloc(NSAMPLES * sizeof(int16_t));
     double complex *fftbuffer = malloc(NSAMPLES * sizeof(double complex));
-    int f = 0, inverse = 0;
+    int f = 0;
     int16_t max, min;
 
     while(!exit_req)
@@ -262,6 +262,7 @@ int main(int argc, char* argv[])
         }
         else
         {
+            //to improve visibility
             min = INT16_MIN / 16;
             max = INT16_MAX / 16;
 
