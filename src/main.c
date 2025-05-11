@@ -6,6 +6,7 @@
 #include <termios.h>
 #include <math.h>
 #include <complex.h>
+#include <float.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -17,7 +18,7 @@
 #define WIDTH 256
 #define HEIGHT 128
 #define NSAMPLES 2048
-#define DB_NOISE_THRESH -80
+#define DB_NOISE_THRESH 60
 
 bool dofft = false;
 bool exit_req = false;
@@ -88,7 +89,7 @@ void convert_fft_buffer(int16_t* buffer, double complex* fftbuffer, int n, bool 
         {
             int val = buffer[i];
             //[0, 1]
-            fftbuffer[i] = (double)(val - min) / (double)range;
+            fftbuffer[i] = val;//(double)(val - min) / (double)range;
         }
     }
     else
@@ -101,36 +102,60 @@ void convert_fft_buffer(int16_t* buffer, double complex* fftbuffer, int n, bool 
         //in my case 44100 Hz / 2
         //im also using the log scale to get less noise
 
-        //magnitudes
+        //energy of signal
         for(int i = 0; i < n / 2; i++)
-            fftbuffer[i] = pow(cabs(fftbuffer[i]), 2); //sqrt(Re^2 + Im^2) is the magnitude  
+            fftbuffer[i] = pow(cabs(fftbuffer[i]), 2); //sqrt(Re^2 + Im^2)^2 is the energy  
 
         get_range_fft(fftbuffer, n / 2, &min, &max);
         range = max - min;
+        
+        max = 0;
 
         //converting values to decibel
         for(int i = 0; i < n / 2; i++)
         {
-            double val = (fftbuffer[i] - min) / range;
-            
+            //double val = (fftbuffer[i] - min) / range;
+            double val = fftbuffer[i];
             val = 20.0 * log10(val + 1e-12);
-
-            if(val < DB_NOISE_THRESH)
-                val = DB_NOISE_THRESH;
-
             fftbuffer[i] = val; 
+
+            if(val > max)
+                max = val;
+        }
+
+        if(max <= 0)
+          printf("max %f\n", max);
+
+        for(int i = 0; i < n / 2; i++)
+        {
+            double val = fftbuffer[i];
+            val -= max;
+
+            if(val < -DB_NOISE_THRESH)
+                val = -DB_NOISE_THRESH;
+        
+            fftbuffer[i] = val;
         }
  
-        min = DB_NOISE_THRESH;
+        min = -DB_NOISE_THRESH;
         max = 0;
-        range = -DB_NOISE_THRESH;      
+        range = DB_NOISE_THRESH;      
 
         for(int i = 0; i < n; i++, j += 0.5)
         {
             double mag = fftbuffer[(int)j];
+            double norm = (mag - min) / range;
+
+            if(norm > 1 || norm < 0)
+                printf("norm %f\n", norm);
+
+            int wave_val = (uint16max * norm) - INT16_MAX;
+
+            if(wave_val > INT16_MAX || wave_val < INT16_MIN)
+                printf("wave val %d\n", wave_val);
 
             //[-2^15, 2^15 - 1] is the range of values in the final buffer
-            buffer[i] = (uint16max * ((mag - min) / range)) - INT16_MAX;
+            buffer[i] = wave_val;
         }
     }
 }
