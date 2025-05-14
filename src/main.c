@@ -17,25 +17,24 @@
 
 #define WIDTH 256
 #define HEIGHT 128
-#define NSAMPLES 2048
-#define DB_NOISE_THRESH 60
+#define NSAMPLES 256 //must be power of 2!
+#define DB_NOISE_THRESH 90
 
 bool dofft = false;
 bool exit_req = false;
 
-void generate_sound(int16_t* buffer, int samples)
+void generate_sin_wave(int16_t* buffer, int samples, double frequency)
 {
     double pi = acos(-1);
     double pi2 = 2.0 * pi;
-    double coeff = pi2 / (double)samples;
+    double coeff = frequency * pi2 / (double)samples;
 
     double c = 0;
-    double codomain = 1.0 / pi2;
 
     for(int i = 0; i < samples; i++, c += coeff)
     {
-        double val = (sin(c) + cos(2 * c + pi / 3) + sin(5 * c - pi / 6)) * codomain;
-        buffer[i] = val * (UINT16_MAX) - INT16_MAX;
+        double val = (sin(c) + 1.0) * 0.5;
+        buffer[i] = val * (UINT16_MAX - 1) - INT16_MAX;
     }
 }
 
@@ -82,77 +81,61 @@ void convert_fft_buffer(int16_t* buffer, double complex* fftbuffer, int n, bool 
     if(tofft)
     {
         int16_t min, max;
-        get_range_sound(buffer, n, &min, &max);
-        double range = max - min;
-
+        min = INT16_MIN;
+        max = INT16_MAX;
+        
+        double range = UINT16_MAX;
+        
+//        generate_sound(buffer, n);
+        
         for(int i = 0; i < n; i++)
         {
-            int val = buffer[i];
-            //[0, 1]
-            fftbuffer[i] = val;//(double)(val - min) / (double)range;
+            double val = buffer[i];
+            double norm = (double)val / (double)max;
+            
+            //[-1, 1]
+            fftbuffer[i] = norm;
         }
     }
     else
     {
-        double min, max, range;
-        double uint16max = UINT16_MAX - 1; 
+        double min, max, range, val;
+        int uint16max = 0xffff; 
         double j = 0;
-        
         //the fft produces N/2 data from 0 Hz to Nyquist frequency samplerate / 2
         //in my case 44100 Hz / 2
         //im also using the log scale to get less noise
 
-        //energy of signal
+        //magnitude of signal
         for(int i = 0; i < n / 2; i++)
-            fftbuffer[i] = pow(cabs(fftbuffer[i]), 2); //sqrt(Re^2 + Im^2)^2 is the energy  
+            fftbuffer[i] = cabs(fftbuffer[i]) / (double)n; //sqrt(Re^2 + Im^2) is the magnitude  
 
-        get_range_fft(fftbuffer, n / 2, &min, &max);
-        range = max - min;
-        
-        max = 0;
-
-        //converting values to decibel
+        //converting values to decibel scale
         for(int i = 0; i < n / 2; i++)
         {
-            //double val = (fftbuffer[i] - min) / range;
-            double val = fftbuffer[i];
-            val = 20.0 * log10(val + 1e-12);
-            fftbuffer[i] = val; 
-
-            if(val > max)
-                max = val;
-        }
-
-        if(max <= 0)
-          printf("max %f\n", max);
-
-        for(int i = 0; i < n / 2; i++)
-        {
-            double val = fftbuffer[i];
-            val -= max;
+            val = fftbuffer[i];
+            val = 20.0 * log10(val + 1e-12); 
 
             if(val < -DB_NOISE_THRESH)
                 val = -DB_NOISE_THRESH;
-        
-            fftbuffer[i] = val;
-        }
- 
-        min = -DB_NOISE_THRESH;
-        max = 0;
-        range = DB_NOISE_THRESH;      
 
+            fftbuffer[i] = val; 
+        }
+
+        //scaling to decibel range
+        max = 0;
+        min = -DB_NOISE_THRESH;
+        range = max - min;
+        
         for(int i = 0; i < n; i++, j += 0.5)
         {
-            double mag = fftbuffer[(int)j];
+            int index = j;
+
+            double mag = creal(fftbuffer[index]);
             double norm = (mag - min) / range;
 
-            if(norm > 1 || norm < 0)
-                printf("norm %f\n", norm);
-
-            int wave_val = (uint16max * norm) - INT16_MAX;
-
-            if(wave_val > INT16_MAX || wave_val < INT16_MIN)
-                printf("wave val %d\n", wave_val);
+            int m1 = (uint16max * norm);
+            int wave_val = fmin(INT16_MAX, m1 - INT16_MAX);
 
             //[-2^15, 2^15 - 1] is the range of values in the final buffer
             buffer[i] = wave_val;
@@ -273,7 +256,7 @@ int main(int argc, char* argv[])
 
         //printf("get_microphone_buffer");
         get_microphone_buffer(sound, NSAMPLES);
-
+        
         if(dofft)
         {
             convert_fft_buffer(sound, fftbuffer, NSAMPLES, true);
@@ -295,6 +278,7 @@ int main(int argc, char* argv[])
         }
 
         f++;
+        //usleep(1000 * 1000);
         usleep(16000);
     }
 
